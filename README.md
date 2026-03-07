@@ -77,3 +77,10 @@ Runtimes are for one frame, either of an image or video
 1080p on gpu, 4AA, wormhole_video_withAA.py: 4 minutes
 
 I'm not sure if runtimes will vary depending on hardware, but I'm assuming they will, so these runtimes are not exact. Also, they vary depending on whether or not adaptive steps are active.
+
+# Contact
+My email is v1modeler@gmail.com 
+
+Please contact me for any questions or feedback*
+
+I might respond a little late, as I don't really check my emails that often*
