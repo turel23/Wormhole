@@ -62,6 +62,7 @@ https://www.spacespheremaps.com/hdr-spheremaps/
 
 and from NASA's SVS sky maps:
 https://svs.gsfc.nasa.gov/search/?keywords=Sky%20Map
+NASA/Goddard Space Flight Center Scientific Visualization Studio. Gaia DR2: ESA/Gaia/DPAC. Constellation figures based on those developed for the IAU by Alan MacRobert of Sky and Telescope magazine (Roger Sinnott and Rick Fienberg).
 
 # Runtimes
 Runtimes are for one frame, either of an image or video
