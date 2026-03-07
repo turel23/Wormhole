@@ -19,7 +19,7 @@ Vertical line issue:
 
 <img width="366" height="432" alt="image" src="https://github.com/user-attachments/assets/682dc687-cb44-42c2-adc5-0ae7be32f15a" />
 
-#Gallery
+# Gallery
 These images are available in the images/ foler
 
 4K, 4 AA
