@@ -1,7 +1,7 @@
 # Wormhole
 This project uses relativstic ray tracing to create a visual simulation for wormholes
 
-I used the metric for the Ellis wormhole to derive the equations that I integrated with standard Runge-Kutta 4
+I used the metric for the Ellis wormhole to derive the equations that I integrated with standard Runge-Kutta 4.
 The files for wormhole.py and wormhole_cuda.py were written mostly if not entirely by myself, though for more complicated camera work and fixing stretching (which was a problem because it projeted a 2d image into a 3d space) I had implemented with Claude Haiku 4.5 and GPT 5.3 Codex. 
 
 # Structure
