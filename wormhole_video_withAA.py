@@ -9,9 +9,8 @@ import os
 os.makedirs("frames", exist_ok=True)
 #parameters
 b_0 = 1
-l = 6*b_0
 l_max = 20*b_0
-dt = 0.002 
+dt = 0.002
 #Note for dt: Adaptive timestep is now used near wormhole throat for better accuracy.
 #With antialiasing and bilinear interpolation, dt=0.002-0.003 works well for 1080p.
 #For 4K, use dt=0.001. Higher dt values may still work due to adaptive stepping.
@@ -19,11 +18,23 @@ dt_max = 120
 steps = int(dt_max/dt)
 aa_samples = 2  # antialiasing: number of samples per pixel (2 for diagonal sampling)
 x_shift = 1500  # adjusted to move phi seam away from center
+
+#animation settings
 video_duration = 10
-change_phi = 3
 fps = 24
 num_frames = video_duration * fps
-d_phi = change_phi/(num_frames) * (2*math.pi)/180  # total change in phi over the video duration, converted to radians per frame
+
+change_phi = 0
+phi_offset = 0
+d_phi = change_phi/(num_frames-1) * (2*math.pi)/180 
+
+change_l = -12
+l = 6*b_0
+d_l = change_l/(num_frames-1)
+
+change_yaw = 180 #No need to convert to radians, it does it later in the kernel
+cam_yaw = 0.0    # Rotate left/right
+d_yaw = change_yaw/(num_frames-1)
 
 
 
@@ -36,7 +47,7 @@ photon_phi = 0
 hdri_universe1 = imageio.imread("Skyboxes/starmap_2020_8K.exr")[..., :3].astype(np.float32)
 hdri_universe2 = imageio.imread("Skyboxes/HDR_galactic_plane_hazy_nebulae.hdr")[..., :3].astype(np.float32)
 
-print(f"Shape: {hdri_universe1.shape}, dtype: {hdri_universe1.dtype}")
+print(f"Shape: {hdri_universe1.shape}, dtype: {hdri_universe1.dtype}") # troubleshooting
 
 hdri_universe1 = hdri_universe1.astype(np.float32)
 hdri_universe2 = hdri_universe2.astype(np.float32)
@@ -44,12 +55,7 @@ hdri_universe1 /= np.max(hdri_universe1)
 hdri_universe2 /= np.max(hdri_universe2)
 
 
-# plt.imshow(hdri_universe1)
-# plt.title("Click to get coordinates")
 
-# coords = plt.ginput(1)
-# print(coords)
-# exit()
 #image setup
 cam_resx = 1920 #pixels
 cam_resy = 1080 
@@ -59,7 +65,7 @@ aspect = cam_resx / cam_resy
 fov_x = 2 * math.atan(math.tan(fov_y * math.pi / 360) * aspect) * 180 / math.pi
 # Camera rotation angles in degrees (pitch up toward north pole, yaw)
 cam_pitch = 0  # Increase to look UP (e.g., 45.0 to look at north pole)
-cam_yaw = 0.0    # Rotate left/right
+
 
 image = np.zeros((cam_resy, cam_resx, 3), dtype=np.float32)
 image_gpu = cuda.to_device(image)
@@ -70,8 +76,39 @@ capture_gpu = cuda.to_device(capture)
 
 
 
-print(np.mean(hdri_universe1))
+print(np.mean(hdri_universe1)) #troubleshooting
 print(np.mean(hdri_universe2))
+
+
+def fill_captured_with_horizontal_neighbors(image, captured_mask):
+    """Replace captured pixels with left/right neighbor colors from same row."""
+    if not np.any(captured_mask):
+        return image
+
+    fixed = image.copy()
+
+    # Valid neighbor availability for each captured pixel.
+    left_valid = np.zeros_like(captured_mask)
+    right_valid = np.zeros_like(captured_mask)
+    left_valid[:, 1:] = ~captured_mask[:, :-1]
+    right_valid[:, :-1] = ~captured_mask[:, 1:]
+
+    use_left = captured_mask & left_valid & ~right_valid
+    use_right = captured_mask & right_valid & ~left_valid
+    use_both = captured_mask & left_valid & right_valid
+
+    # Fill from one side when only one clean neighbor exists.
+    fixed[:, 1:][use_left[:, 1:]] = fixed[:, :-1][use_left[:, 1:]]
+    fixed[:, :-1][use_right[:, :-1]] = fixed[:, 1:][use_right[:, :-1]]
+
+    # Average left/right when both are available.
+    both_cols = use_both[:, 1:-1]
+    if np.any(both_cols):
+        left_vals = fixed[:, :-2][both_cols]
+        right_vals = fixed[:, 2:][both_cols]
+        fixed[:, 1:-1][both_cols] = 0.5 * (left_vals + right_vals)
+
+    return fixed
 
 @cuda.jit(device=True)
 def accelerations(photon_l, photon_theta, photon_phi, photon_dl, photon_dtheta, photon_dphi):
@@ -93,7 +130,7 @@ def derivatives(photon_l, photon_theta, photon_phi, photon_dl, photon_dtheta, ph
     return photon_dl, photon_dtheta, photon_dphi, a_l, a_theta, a_phi
 
 @cuda.jit(fastmath = True)
-def render_kernel(b_0, l, l_max, dt, steps, fov_x, fov_y, cam_resx, cam_resy, hdri_universe1_gpu, hdri_universe2_gpu, x_shift, image_gpu, capture_gpu, cam_phi, aa_samples):
+def render_kernel(b_0, l, l_max, dt, steps, fov_x, fov_y, cam_resx, cam_resy, hdri_universe1_gpu, hdri_universe2_gpu, x_shift, image_gpu, capture_gpu, cam_phi, aa_samples, cam_pitch, cam_yaw):
     i, j = cuda.grid(2)
     if i >= cam_resx or j >= cam_resy:
         return
@@ -120,6 +157,13 @@ def render_kernel(b_0, l, l_max, dt, steps, fov_x, fov_y, cam_resx, cam_resy, hd
             # Pinhole camera model: cast rays through a flat image plane.
             px = (2 * ((i + offset_x) / cam_resx) - 1) * math.tan(fov_x * math.pi / 360)
             py = (1 - 2 * ((j + offset_y) / cam_resy)) * math.tan(fov_y * math.pi / 360)
+
+            # Add tiny epsilon to prevent exact zeros that might cause numerical issues
+            epsilon = 1e-10
+            if abs(px) < epsilon:
+                px = epsilon if px >= 0 else -epsilon
+            if abs(py) < epsilon:
+                py = epsilon if py >= 0 else -epsilon
 
             dir_x = px
             dir_y = py
@@ -166,28 +210,21 @@ def render_kernel(b_0, l, l_max, dt, steps, fov_x, fov_y, cam_resx, cam_resy, hd
             tmp = 1 - spatial_ang
             if tmp < 0:
                 tmp = 0
-            v_l = -math.sqrt(tmp)
+            v_l = dir_z * math.sqrt(tmp)
             
             photon_dl = v_l
             photon_dtheta = v_theta
             photon_dphi = v_phi
-            
-            # Center column scaling: smaller dt at center, normal at edges
-            # Distance from center as fraction of half-width (0 at center, 1 at edges)
-            norm_dist = abs(i + offset_x - cam_resx/2) / (cam_resx/2)
-            norm_dist = min(1.0, norm_dist)
-            # Linear ramp from 0.3x dt at center to 1.0x dt at edges
-            center_scale = 0.3 + 0.7 * norm_dist
 
             for k in range(steps-1):
-                # Adaptive timestep: use smaller dt near wormhole throat and at screen center
+                # Adaptive timestep: scale down near wormhole throat (dynamically updates as photon moves)
                 radius_sq = b_0*b_0 + photon_l*photon_l
-                adaptive_dt = dt * center_scale  # Apply center column scaling
+                adaptive_dt = dt
                 
-                if radius_sq < 4.0 * b_0 * b_0:  # Within 2*b_0 radius
+                if radius_sq < 4.0 * b_0 * b_0:  # Within 2*b_0 radius of throat
                     # Scale dt down smoothly as we get closer to throat
-                    scale_factor = max(0.25, radius_sq / (4.0 * b_0 * b_0))
-                    adaptive_dt = adaptive_dt * scale_factor
+                    scale_factor = max(0.3, radius_sq / (4.0 * b_0 * b_0))
+                    adaptive_dt = dt * scale_factor
                 
                 photon_dl_k1, photon_dtheta_k1, photon_dphi_k1, photon_al_k1, photon_atheta_k1, photon_aphi_k1 = derivatives(photon_l, photon_theta, photon_phi, photon_dl, photon_dtheta, photon_dphi)
                 photon_dl_k2, photon_dtheta_k2, photon_dphi_k2, photon_al_k2, photon_atheta_k2, photon_aphi_k2 = derivatives(photon_l + 0.5*adaptive_dt*photon_dl_k1, photon_theta + 0.5*adaptive_dt*photon_dtheta_k1, photon_phi + 0.5*adaptive_dt*photon_dphi_k1, photon_dl + 0.5*adaptive_dt*photon_al_k1, photon_dtheta + 0.5*adaptive_dt*photon_atheta_k1, photon_dphi + 0.5*adaptive_dt*photon_aphi_k1)
@@ -200,8 +237,9 @@ def render_kernel(b_0, l, l_max, dt, steps, fov_x, fov_y, cam_resx, cam_resy, hd
                 photon_dtheta += (adaptive_dt/6)*(photon_atheta_k1 + 2*photon_atheta_k2 + 2*photon_atheta_k3 + photon_atheta_k4)
                 photon_dphi += (adaptive_dt/6)*(photon_aphi_k1 + 2*photon_aphi_k2 + 2*photon_aphi_k3 + photon_aphi_k4)
                 
-                # Check for numerical issues
+                # Check for numerical issues - mark pixel if this triggers
                 if not (-1e10 < photon_l < 1e10) or not (0 < photon_theta < math.pi):
+                    capture_gpu[j, i] = True
                     break
                 if abs(photon_l) > l_max:
                     break
@@ -290,9 +328,6 @@ def render_kernel(b_0, l, l_max, dt, steps, fov_x, fov_y, cam_resx, cam_resy, hd
                 r *= fade
                 g *= fade
                 b *= fade
-            if capture_gpu[j, i]:
-                r, g, b = 0, 0, 0  # captured rays appear black
-            
             # Accumulate samples
             r_accum += r
             g_accum += g
@@ -313,9 +348,19 @@ print(f"Starting render: {num_frames} frames with {aa_samples}x antialiasing")
 print(f"Process ID: {os.getpid()}")  # Help identify if multiple instances are running
 
 for frame in range(num_frames):
-    phi_offset = frame * d_phi
-    render_kernel[blockspergrid, threadsperblock](b_0, l, l_max, dt, steps, fov_x, fov_y, cam_resx, cam_resy, hdri_universe1_gpu, hdri_universe2_gpu, x_shift, image_gpu, capture_gpu, phi_offset, aa_samples)
+    phi_temp = phi_offset + (frame) * d_phi
+    l_temp = l + (frame) * d_l
+    # Non-linear yaw using atan to keep wormhole centered while rotating
+    cam_yaw_temp = 90 - 90 * (math.atan(l_temp / b_0) / math.atan(l / b_0))
+
+    # Reset capture flags for this frame so only current-frame failures are repaired.
+    capture.fill(False)
+    capture_gpu.copy_to_device(capture)
+
+    render_kernel[blockspergrid, threadsperblock](b_0, l_temp, l_max, dt, steps, fov_x, fov_y, cam_resx, cam_resy, hdri_universe1_gpu, hdri_universe2_gpu, x_shift, image_gpu, capture_gpu, phi_temp, aa_samples, cam_pitch, cam_yaw_temp)
     image = image_gpu.copy_to_host()
+    capture = capture_gpu.copy_to_host()
+    image = fill_captured_with_horizontal_neighbors(image, capture)
     image = np.clip(image, 0, 1)
     image = image**(1/2.2) #gamma correction
     image_uint8 = (image*255).astype(np.uint8)
