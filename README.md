@@ -13,7 +13,7 @@ wormhole_cuda.py uses Numba Cuda which reduced my rendering time significantly. 
 wormhole_video_withAA.py includes more features. Since it has anti-aliasing, it is _withAA, and I have it set to 2 as default, so it takes 2 pixels instead of just 1. It also has bilinear interpolation and a better camera model, and fixes the weird distortion at the poles. Running 4x antialiasing means it will take 4 times as long compared to rendering a normal frame without anti-aliasing.
 
 # Problems
-Some problems I ran into included artifacts that showed up in the middle of the screen. For higher dt values, which is the step size, a vertical column would appear covering the wormhole. For higher resolutions, it showed up even more, which meant I had to decrease the step size for higher resolutions. I didn't want to increase the resolution while decreasing the step size, which makes computation painfully long. So a feature to fix this is to have adaptive steps, which decreased the step size as the pixels got closer and closer to the middle.
+Some problems I ran into included artifacts that showed up in the middle of the screen. For higher dt values, which is the step size, a vertical column would appear covering the wormhole. For higher resolutions, it showed up even more, which meant I had to decrease the step size for higher resolutions. I didn't want to increase the resolution while decreasing the step size, which makes computation painfully long. So a feature to fix this is to have adaptive steps, which decreased the step size as the pixels got closer and closer to the middle. However, if anyone knows a better fix, please let me know.
 
 Vertical line issue:
 
