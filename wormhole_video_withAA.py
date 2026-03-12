@@ -10,13 +10,13 @@ os.makedirs("frames", exist_ok=True)
 #parameters
 b_0 = 1
 l_max = 20*b_0
-dt = 0.002
+dt = 0.001
 #Note for dt: Adaptive timestep is now used near wormhole throat for better accuracy.
 #With antialiasing and bilinear interpolation, dt=0.002-0.003 works well for 1080p.
 #For 4K, use dt=0.001. Higher dt values may still work due to adaptive stepping.
 dt_max = 120
 steps = int(dt_max/dt)
-aa_samples = 2  # antialiasing: number of samples per pixel (2 for diagonal sampling)
+aa_samples = 2  # antialiasing: 4 samples = 2x2 grid per pixel
 x_shift = 1500  # adjusted to move phi seam away from center
 
 #animation settings
@@ -45,7 +45,7 @@ photon_phi = 0
 
 #open  the hdri image
 hdri_universe1 = imageio.imread("Skyboxes/starmap_2020_8K.exr")[..., :3].astype(np.float32)
-hdri_universe2 = imageio.imread("Skyboxes/HDR_galactic_plane_hazy_nebulae.hdr")[..., :3].astype(np.float32)
+hdri_universe2 = imageio.imread("Skyboxes/starmap_2020_8K.exr")[..., :3].astype(np.float32)
 
 print(f"Shape: {hdri_universe1.shape}, dtype: {hdri_universe1.dtype}") # troubleshooting
 
@@ -81,32 +81,29 @@ print(np.mean(hdri_universe2))
 
 
 def fill_captured_with_horizontal_neighbors(image, captured_mask):
-    """Replace captured pixels with left/right neighbor colors from same row."""
+    """Replace captured pixels by row-wise interpolation from nearest valid pixels."""
     if not np.any(captured_mask):
         return image
 
     fixed = image.copy()
+    H, W, C = image.shape
+    x = np.arange(W, dtype=np.float32)
 
-    # Valid neighbor availability for each captured pixel.
-    left_valid = np.zeros_like(captured_mask)
-    right_valid = np.zeros_like(captured_mask)
-    left_valid[:, 1:] = ~captured_mask[:, :-1]
-    right_valid[:, :-1] = ~captured_mask[:, 1:]
+    for row in range(H):
+        row_mask = captured_mask[row]
+        if not np.any(row_mask):
+            continue
 
-    use_left = captured_mask & left_valid & ~right_valid
-    use_right = captured_mask & right_valid & ~left_valid
-    use_both = captured_mask & left_valid & right_valid
+        valid_cols = np.where(~row_mask)[0]
+        if valid_cols.size == 0:
+            # Extremely rare: entire row captured. Keep original row.
+            continue
 
-    # Fill from one side when only one clean neighbor exists.
-    fixed[:, 1:][use_left[:, 1:]] = fixed[:, :-1][use_left[:, 1:]]
-    fixed[:, :-1][use_right[:, :-1]] = fixed[:, 1:][use_right[:, :-1]]
-
-    # Average left/right when both are available.
-    both_cols = use_both[:, 1:-1]
-    if np.any(both_cols):
-        left_vals = fixed[:, :-2][both_cols]
-        right_vals = fixed[:, 2:][both_cols]
-        fixed[:, 1:-1][both_cols] = 0.5 * (left_vals + right_vals)
+        # Interpolate each channel using all valid columns in this row.
+        for ch in range(C):
+            valid_vals = fixed[row, valid_cols, ch]
+            interp_vals = np.interp(x, valid_cols.astype(np.float32), valid_vals)
+            fixed[row, row_mask, ch] = interp_vals[row_mask]
 
     return fixed
 
@@ -129,7 +126,7 @@ def derivatives(photon_l, photon_theta, photon_phi, photon_dl, photon_dtheta, ph
     a_l, a_theta, a_phi = accelerations(photon_l, photon_theta, photon_phi, photon_dl, photon_dtheta, photon_dphi)
     return photon_dl, photon_dtheta, photon_dphi, a_l, a_theta, a_phi
 
-@cuda.jit(fastmath = True)
+@cuda.jit
 def render_kernel(b_0, l, l_max, dt, steps, fov_x, fov_y, cam_resx, cam_resy, hdri_universe1_gpu, hdri_universe2_gpu, x_shift, image_gpu, capture_gpu, cam_phi, aa_samples, cam_pitch, cam_yaw):
     i, j = cuda.grid(2)
     if i >= cam_resx or j >= cam_resy:
@@ -139,6 +136,7 @@ def render_kernel(b_0, l, l_max, dt, steps, fov_x, fov_y, cam_resx, cam_resy, hd
     r_accum = 0.0
     g_accum = 0.0
     b_accum = 0.0
+    valid_samples = 0
     
     # 2x2 sample grid for aa_samples=4
     samples_per_axis = int(math.sqrt(aa_samples))
@@ -146,6 +144,7 @@ def render_kernel(b_0, l, l_max, dt, steps, fov_x, fov_y, cam_resx, cam_resy, hd
     
     for si in range(samples_per_axis):
         for sj in range(samples_per_axis):
+            sample_valid = True
             # Subpixel offset
             offset_x = (si + 0.5) * step_size
             offset_y = (sj + 0.5) * step_size
@@ -157,13 +156,6 @@ def render_kernel(b_0, l, l_max, dt, steps, fov_x, fov_y, cam_resx, cam_resy, hd
             # Pinhole camera model: cast rays through a flat image plane.
             px = (2 * ((i + offset_x) / cam_resx) - 1) * math.tan(fov_x * math.pi / 360)
             py = (1 - 2 * ((j + offset_y) / cam_resy)) * math.tan(fov_y * math.pi / 360)
-
-            # Add tiny epsilon to prevent exact zeros that might cause numerical issues
-            epsilon = 1e-10
-            if abs(px) < epsilon:
-                px = epsilon if px >= 0 else -epsilon
-            if abs(py) < epsilon:
-                py = epsilon if py >= 0 else -epsilon
 
             dir_x = px
             dir_y = py
@@ -205,6 +197,16 @@ def render_kernel(b_0, l, l_max, dt, steps, fov_x, fov_y, cam_resx, cam_resy, hd
             v_theta = -dir_y * inv_r
             v_phi = dir_x * inv_r
 
+            # Core fix: regularize near-axis rays (near-zero impact parameter).
+            # At exactly zero angular momentum, azimuth is numerically ill-conditioned,
+            # which causes single-column flicker artifacts when alignment is perfect.
+            sin_t0 = math.sin(photon_theta)
+            ang2 = v_theta * v_theta + (sin_t0 * sin_t0) * v_phi * v_phi
+            ang_floor = 1e-12
+            if ang2 < ang_floor:
+                sign_x = 1.0 if dir_x >= 0.0 else -1.0
+                v_phi = sign_x * math.sqrt(ang_floor) * inv_r
+
             spatial_ang = (b_0*b_0 + photon_l*photon_l)*(v_theta*v_theta + math.sin(photon_theta)*math.sin(photon_theta)*v_phi*v_phi)
             spatial_ang = min(spatial_ang, 1.0-1e-8)
             tmp = 1 - spatial_ang
@@ -215,6 +217,7 @@ def render_kernel(b_0, l, l_max, dt, steps, fov_x, fov_y, cam_resx, cam_resy, hd
             photon_dl = v_l
             photon_dtheta = v_theta
             photon_dphi = v_phi
+            escaped_side = 0  # +1 escaped to +l side, -1 escaped to -l side
 
             for k in range(steps-1):
                 # Adaptive timestep: scale down near wormhole throat (dynamically updates as photon moves)
@@ -225,6 +228,14 @@ def render_kernel(b_0, l, l_max, dt, steps, fov_x, fov_y, cam_resx, cam_resy, hd
                     # Scale dt down smoothly as we get closer to throat
                     scale_factor = max(0.3, radius_sq / (4.0 * b_0 * b_0))
                     adaptive_dt = dt * scale_factor
+
+                # Keep a stable backup in case RK update becomes non-finite.
+                prev_l = photon_l
+                prev_theta = photon_theta
+                prev_phi = photon_phi
+                prev_dl = photon_dl
+                prev_dtheta = photon_dtheta
+                prev_dphi = photon_dphi
                 
                 photon_dl_k1, photon_dtheta_k1, photon_dphi_k1, photon_al_k1, photon_atheta_k1, photon_aphi_k1 = derivatives(photon_l, photon_theta, photon_phi, photon_dl, photon_dtheta, photon_dphi)
                 photon_dl_k2, photon_dtheta_k2, photon_dphi_k2, photon_al_k2, photon_atheta_k2, photon_aphi_k2 = derivatives(photon_l + 0.5*adaptive_dt*photon_dl_k1, photon_theta + 0.5*adaptive_dt*photon_dtheta_k1, photon_phi + 0.5*adaptive_dt*photon_dphi_k1, photon_dl + 0.5*adaptive_dt*photon_al_k1, photon_dtheta + 0.5*adaptive_dt*photon_atheta_k1, photon_dphi + 0.5*adaptive_dt*photon_aphi_k1)
@@ -237,12 +248,48 @@ def render_kernel(b_0, l, l_max, dt, steps, fov_x, fov_y, cam_resx, cam_resy, hd
                 photon_dtheta += (adaptive_dt/6)*(photon_atheta_k1 + 2*photon_atheta_k2 + 2*photon_atheta_k3 + photon_atheta_k4)
                 photon_dphi += (adaptive_dt/6)*(photon_aphi_k1 + 2*photon_aphi_k2 + 2*photon_aphi_k3 + photon_aphi_k4)
                 
-                # Check for numerical issues - mark pixel if this triggers
-                if not (-1e10 < photon_l < 1e10) or not (0 < photon_theta < math.pi):
-                    capture_gpu[j, i] = True
+                # If RK update went unstable, restore last finite state and terminate ray cleanly.
+                if not math.isfinite(photon_l) or not math.isfinite(photon_theta) or not math.isfinite(photon_phi):
+                    photon_l = prev_l
+                    photon_theta = prev_theta
+                    photon_phi = prev_phi
+                    photon_dl = prev_dl
+                    photon_dtheta = prev_dtheta
+                    photon_dphi = prev_dphi
+                    sample_valid = False
+                    break
+
+                # Clamp theta away from poles to prevent cot(theta) blowups and false captures.
+                theta_eps = 1e-6
+                if photon_theta <= theta_eps:
+                    photon_theta = theta_eps
+                    if photon_dtheta < 0.0:
+                        photon_dtheta = -photon_dtheta
+                elif photon_theta >= (math.pi - theta_eps):
+                    photon_theta = math.pi - theta_eps
+                    if photon_dtheta > 0.0:
+                        photon_dtheta = -photon_dtheta
+
+                if not (-1e10 < photon_l < 1e10):
+                    photon_l = prev_l
+                    photon_theta = prev_theta
+                    photon_phi = prev_phi
+                    photon_dl = prev_dl
+                    photon_dtheta = prev_dtheta
+                    photon_dphi = prev_dphi
+                    sample_valid = False
                     break
                 if abs(photon_l) > l_max:
+                    escaped_side = 1 if photon_l > 0.0 else -1
                     break
+
+            # If the ray did not escape by step budget, treat as invalid sample.
+            # These under-integrated rays create faint/dark centerline artifacts.
+            if escaped_side == 0:
+                sample_valid = False
+
+            if not sample_valid:
+                continue
             
             # Equirectangular environment lookup with explicit pole-zone stabilization.
             phi = photon_phi % (2 * math.pi)
@@ -277,7 +324,7 @@ def render_kernel(b_0, l, l_max, dt, steps, fov_x, fov_y, cam_resx, cam_resy, hd
             fu = u - int(u)
             fv = v - int(v)
             
-            if photon_l > 0:
+            if escaped_side > 0:
                 # Bilinear interpolation
                 c00_r = hdri_universe1_gpu[v0, u0, 0]
                 c00_g = hdri_universe1_gpu[v0, u0, 1]
@@ -332,11 +379,19 @@ def render_kernel(b_0, l, l_max, dt, steps, fov_x, fov_y, cam_resx, cam_resy, hd
             r_accum += r
             g_accum += g
             b_accum += b
+            valid_samples += 1
     
-    # Average all samples
-    image_gpu[j, i, 0] = r_accum / aa_samples
-    image_gpu[j, i, 1] = g_accum / aa_samples
-    image_gpu[j, i, 2] = b_accum / aa_samples
+    if valid_samples > 0:
+        # Average only valid subpixel samples.
+        image_gpu[j, i, 0] = r_accum / valid_samples
+        image_gpu[j, i, 1] = g_accum / valid_samples
+        image_gpu[j, i, 2] = b_accum / valid_samples
+    else:
+        # Mark for host-side fill only when every AA sample failed.
+        capture_gpu[j, i] = True
+        image_gpu[j, i, 0] = 0.0
+        image_gpu[j, i, 1] = 0.0
+        image_gpu[j, i, 2] = 0.0
         
 
 threadsperblock = (16,16)
@@ -360,6 +415,7 @@ for frame in range(num_frames):
     render_kernel[blockspergrid, threadsperblock](b_0, l_temp, l_max, dt, steps, fov_x, fov_y, cam_resx, cam_resy, hdri_universe1_gpu, hdri_universe2_gpu, x_shift, image_gpu, capture_gpu, phi_temp, aa_samples, cam_pitch, cam_yaw_temp)
     image = image_gpu.copy_to_host()
     capture = capture_gpu.copy_to_host()
+    captured_count = int(np.count_nonzero(capture))
     image = fill_captured_with_horizontal_neighbors(image, capture)
     image = np.clip(image, 0, 1)
     image = image**(1/2.2) #gamma correction
@@ -367,4 +423,4 @@ for frame in range(num_frames):
     img = Image.fromarray(image_uint8)
     filename = f"frames/frame_{frame:04d}.png"
     img.save(filename)
-    print(f"[PID {os.getpid()}] Frame {frame+1}/{num_frames} saved: {filename}", flush=True)
+    print(f"[PID {os.getpid()}] Frame {frame+1}/{num_frames} saved: {filename} (captured={captured_count})", flush=True)

@@ -12,13 +12,6 @@ dt_max = 120
 steps = int(dt_max/dt)
 x_shift = -1270
 
-# photon_l = np.zeros(steps)
-# photon_theta = np.zeros(steps)
-# photon_phi = np.zeros(steps)
-# photon_dl = np.zeros(steps)
-# photon_dtheta = np.zeros(steps)
-# photon_dphi = np.zeros(steps)
-
 #initial conditions
 photon_l = l
 photon_theta = np.pi/2
@@ -33,25 +26,6 @@ hdri_universe1 /= np.max(hdri_universe1)
 hdri_universe2 /= np.max(hdri_universe2)
 
 
-# plt.imshow(hdri_universe1)
-# plt.title("Click to get coordinates")
-
-# coords = plt.ginput(1)
-# print(coords)
-# exit()
-
-
-H, W = 1024, 2048  # fake HDRI size
-
-# # +l side: colorful gradient nebula
-# hdri_universe1 = np.zeros((H, W, 3), dtype=np.float32)
-# for i in range(H):
-#     for j in range(W):
-#         hdri_universe1[i,j] = [i/H, j/W, (i+j)/(H+W)]  # simple RGB gradient
-
-# # -l side: dark / almost black
-# hdri_universe2 = np.zeros((H, W, 3), dtype=np.float32)
-# hdri_universe2 += 0.1  # slightly gray
 #image setup
 cam_resx = 200 #pixels
 cam_resy = 200 
@@ -80,12 +54,6 @@ for i in range(cam_resx):
     if i % 20 == 0:
         print(f"Processing column {i}/{cam_resx}")
     for j in range(cam_resy):
-        # photon_l = np.zeros(steps)
-        # photon_theta = np.zeros(steps)
-        # photon_phi = np.zeros(steps)
-        # photon_dl = np.zeros(steps)
-        # photon_dtheta = np.zeros(steps)
-        # photon_dphi = np.zeros(steps)
 
         photon_l = l
         photon_theta = np.pi/2
