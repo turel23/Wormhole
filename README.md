@@ -1,7 +1,7 @@
 # Wormhole
 This project uses relativstic ray tracing to create a visual simulation for wormholes
 
-I used the metric for the Ellis wormhole to derive the equations that I integrated with standard Runge-Kutta 4
+I used the metric for the Ellis wormhole to derive the equations that I integrated with standard Runge-Kutta 4.
 The files for wormhole.py and wormhole_cuda.py were written mostly if not entirely by myself, though for more complicated camera work and fixing stretching (which was a problem because it projeted a 2d image into a 3d space) I had implemented with Claude Haiku 4.5 and GPT 5.3 Codex. 
 
 # Structure
@@ -13,13 +13,13 @@ wormhole_cuda.py uses Numba Cuda which reduced my rendering time significantly. 
 wormhole_video_withAA.py includes more features. Since it has anti-aliasing, it is _withAA, and I have it set to 2 as default, so it takes 2 pixels instead of just 1. It also has bilinear interpolation and a better camera model, and fixes the weird distortion at the poles. Running 4x antialiasing means it will take 4 times as long compared to rendering a normal frame without anti-aliasing.
 
 # Problems
-Some problems I ran into included artifacts that showed up in the middle of the screen. For higher dt values, which is the step size, a vertical column would appear covering the wormhole. For higher resolutions, it showed up even more, which meant I had to decrease the step size for higher resolutions. I didn't want to increase the resolution while decreasing the step size, which makes computation painfully long. So a feature to fix this is to have adaptive steps, which decreased the step size as the pixels got closer and closer to the middle.
+Some problems I ran into included artifacts that showed up in the middle of the screen. For higher dt values, which is the step size, a vertical column would appear covering the wormhole. For higher resolutions, it showed up even more, which meant I had to decrease the step size for higher resolutions. I didn't want to increase the resolution while decreasing the step size, which makes computation painfully long. So a feature to fix this is to have adaptive steps, which decreased the step size as the pixels got closer and closer to the middle. However, if anyone knows a better fix, please let me know.
 
 Vertical line issue:
 
 <img width="366" height="432" alt="image" src="https://github.com/user-attachments/assets/682dc687-cb44-42c2-adc5-0ae7be32f15a" />
 
-#Gallery
+# Gallery
 These images are available in the images/ foler
 
 4K, 4 AA
@@ -62,6 +62,7 @@ https://www.spacespheremaps.com/hdr-spheremaps/
 
 and from NASA's SVS sky maps:
 https://svs.gsfc.nasa.gov/search/?keywords=Sky%20Map
+NASA/Goddard Space Flight Center Scientific Visualization Studio. Gaia DR2: ESA/Gaia/DPAC. Constellation figures based on those developed for the IAU by Alan MacRobert of Sky and Telescope magazine (Roger Sinnott and Rick Fienberg).
 
 # Runtimes
 Runtimes are for one frame, either of an image or video
@@ -77,3 +78,10 @@ Runtimes are for one frame, either of an image or video
 1080p on gpu, 4AA, wormhole_video_withAA.py: 4 minutes
 
 I'm not sure if runtimes will vary depending on hardware, but I'm assuming they will, so these runtimes are not exact. Also, they vary depending on whether or not adaptive steps are active.
+
+# Contact
+My email is v1modeler@gmail.com 
+
+Please contact me for any questions or feedback*
+
+I might respond a little late, as I don't really check my emails that often*
