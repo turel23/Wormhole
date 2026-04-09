@@ -20,8 +20,8 @@ photon_theta = np.pi/2
 photon_phi = 0
 
 #open  the hdri image
-hdri_universe1 = imageio.imread("starmap_2020_8K.exr")[..., :3].astype(np.float32)
-hdri_universe2 = imageio.imread("HDR_galactic_plane_hazy_nebulae.hdr")[..., :3].astype(np.float32)
+hdri_universe1 = imageio.imread("Skyboxes/starmap_2020_8K.exr")[..., :3].astype(np.float32)
+hdri_universe2 = imageio.imread("Skyboxes/HDR_galactic_plane_hazy_nebulae.hdr")[..., :3].astype(np.float32)
 
 print(f"Shape: {hdri_universe1.shape}, dtype: {hdri_universe1.dtype}")
 
