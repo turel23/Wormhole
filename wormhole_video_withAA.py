@@ -11,7 +11,7 @@ os.makedirs("videos", exist_ok=True)
 b_0 = 1
 l_max = 20*b_0
 dt = 0.002
-a = 0.2  # Wormhole rotation parameter (0 for non-rotating, up to ~1 for fast rotation)
+M = 1  # Mass parameter: event horizon at r = 2M. Rays entering this region render as black.
 # Note for dt: base integration step used by curvature-adaptive stepping.
 # With antialiasing and bilinear interpolation, dt=0.002-0.003 works well for 1080p.
 # For 4K, use dt=0.001. Higher dt values may still work due to adaptive stepping.
@@ -41,7 +41,7 @@ phi_offset = 0
 d_phi = change_phi/frame_span * (2*math.pi)/180 
 
 change_l = -12
-l = 6*b_0
+l = 19*b_0
 d_l = change_l/frame_span
 
 change_yaw = 180 #No need to convert to radians, it does it later in the kernel
@@ -102,43 +102,15 @@ print(np.mean(hdri_universe2))
 
 @cuda.jit(device=True)
 def initial_conditions(photon_l, photon_theta, photon_dt, photon_dphi):
-    r2 = b_0*b_0 + photon_l*photon_l
-    sin_t = math.sin(photon_theta)
-    sin2 = sin_t * sin_t
-    omega = 2.0 * a * (r2 ** -1.5)
-
-    gtt = -1.0 + r2 * sin2 * omega * omega
-    gtphi = -r2 * sin2 * omega
-    gphiphi = r2 * sin2
-
-    energy = -(gtt * photon_dt + gtphi * photon_dphi)
-    momentum = gtphi * photon_dt + gphiphi * photon_dphi
+    energy = -(1-2*M/photon_l)*photon_dt
+    momentum = photon_l**2*math.sin(photon_theta)**2*photon_dphi
     return energy, momentum
 
 @cuda.jit(device=True)
 def accelerations(photon_l, photon_theta, photon_phi, photon_dl, photon_dtheta, photon_dphi, energy, momentum_phi):
-    # Teo metric (N=1, K=1) in proper distance l with r^2 = l^2 + b0^2.
-    r2 = b_0*b_0 + photon_l*photon_l
-    sin_t = math.sin(photon_theta)
-    cos_t = math.cos(photon_theta)
-    sin2 = sin_t * sin_t
-    omega = 2.0 * a * (r2 ** -1.5)
-    domega_dl = -3.0 * photon_l * omega / r2
-
-    gtt = -1.0 + r2 * sin2 * omega * omega
-    gtphi = -r2 * sin2 * omega
-    gphiphi = r2 * sin2
-
-    delta = gtphi * gtphi - gtt * gphiphi
-    if abs(delta) < 1e-12:
-        delta = 1e-12
-
-    photon_dt = (energy * gphiphi + momentum_phi * gtphi) / delta
-    photon_dphi = -(energy * gtphi + momentum_phi * gtt) / delta
-
-    psi = photon_dphi - omega * photon_dt
-    a_l = photon_l * (photon_dtheta*photon_dtheta + sin2 * psi * psi) - r2 * sin2 * psi * domega_dl * photon_dt
-    a_theta = ((photon_l**2+b_0**2)*sin_t*cos_t*(photon_dphi**2-2*omega*photon_dphi*photon_dt+omega*omega*photon_dt*photon_dt)-2*photon_l*photon_dl*photon_dtheta)/(photon_l**2+b_0**2)
+    photon_dt = energy/(2*M/photon_l-1)
+    a_l = (1-2*M/photon_l)*(0.5*((-2*M/photon_l**2)*photon_dt**2-(1-2*M/photon_l)**-2*(2*M/photon_l**2)*photon_dl**2+2*photon_l*(photon_dtheta**2+math.sin(photon_theta)**2*photon_dphi**2))+(1-2*M/photon_l)**-2*(2*M/photon_l**2)*photon_dl)
+    a_theta = math.sin(photon_theta)*math.cos(photon_theta)*photon_dphi**2-2*photon_dl*photon_dtheta/photon_l
     return photon_dt, photon_dphi, a_l, a_theta
 
 @cuda.jit(device=True)
@@ -149,21 +121,7 @@ def derivatives(photon_l, photon_theta, photon_phi, photon_dl, photon_dtheta, ph
 @cuda.jit(device=True)
 def derived_dphi_from_conserved(photon_l, photon_theta, energy, momentum_phi):
     # Recompute dphi from conserved quantities at the updated state.
-    r2 = b_0*b_0 + photon_l*photon_l
-    sin_t = math.sin(photon_theta)
-    sin2 = sin_t * sin_t
-    omega = 2.0 * a * (r2 ** -1.5)
-
-    gtt = -1.0 + r2 * sin2 * omega * omega
-    gtphi = -r2 * sin2 * omega
-    gphiphi = r2 * sin2
-
-    delta = gtphi * gtphi - gtt * gphiphi
-    if abs(delta) < 1e-12:
-        delta = 1e-12
-
-    return -(energy * gtphi + momentum_phi * gtt) / delta
-
+    return momentum_phi/(photon_l**2*math.sin(photon_theta)**2)
 @cuda.jit(device=True)
 def compute_adaptive_dt(base_dt, photon_l, photon_theta, photon_dtheta, photon_dphi):
     # Geometric curvature proxy is strongest near the throat and decays with distance.
@@ -190,7 +148,7 @@ def compute_adaptive_dt(base_dt, photon_l, photon_theta, photon_dtheta, photon_d
     return base_dt * dt_scale
 
 @cuda.jit(fastmath = True)
-def render_kernel(b_0, l, l_max, dt, steps, fov_x, fov_y, cam_resx, cam_resy, hdri_universe1_gpu, hdri_universe2_gpu, x_shift, image_gpu, capture_gpu, cam_phi, aa_samples, cam_pitch, cam_yaw, frame_seed):
+def render_kernel(b_0, l, l_max, dt, steps, fov_x, fov_y, cam_resx, cam_resy, hdri_universe1_gpu, hdri_universe2_gpu, x_shift, image_gpu, capture_gpu, cam_phi, aa_samples, cam_pitch, cam_yaw, frame_seed, M):
     i, j = cuda.grid(2)
     if i >= cam_resx or j >= cam_resy:
         return
@@ -212,6 +170,7 @@ def render_kernel(b_0, l, l_max, dt, steps, fov_x, fov_y, cam_resx, cam_resy, hd
                 offset_x = 0.75
                 offset_y = 0.75
             sample_count += 1
+            hit_event_horizon = False
             
             photon_l = l
             photon_theta = math.pi/2
@@ -329,10 +288,16 @@ def render_kernel(b_0, l, l_max, dt, steps, fov_x, fov_y, cam_resx, cam_resy, hd
                 photon_dtheta += (adaptive_dt/6) * (k1_dtheta + 2*k2_dtheta + 2*k3_dtheta + k4_dtheta)
                 photon_dphi = derived_dphi_from_conserved(photon_l, photon_theta, energy, momentum)
                 
-                # Check for numerical issues
+                # Check for numerical issues and event horizon
                 if not (-1e10 < photon_l < 1e10) or not (0 < photon_theta < math.pi):
                     break
                 if abs(photon_l) > l_max:
+                    break
+                
+                # Check if ray entered or approached the event horizon r = 2M
+                photon_r = photon_l
+                if photon_r < 2.1 * M:  # Slightly larger to catch near-horizon rays
+                    hit_event_horizon = True
                     break
             
             # Equirectangular environment lookup with explicit pole-zone stabilization.
@@ -421,6 +386,8 @@ def render_kernel(b_0, l, l_max, dt, steps, fov_x, fov_y, cam_resx, cam_resy, hd
                 b *= fade
             if capture_gpu[j, i]:
                 r, g, b = 0, 0, 0  # captured rays appear black
+            if hit_event_horizon:
+                r, g, b = 0, 0, 0  # rays entering event horizon appear black
             
             # Accumulate samples
             r_accum += r
@@ -443,6 +410,7 @@ def render_kernel(b_0, l, l_max, dt, steps, fov_x, fov_y, cam_resx, cam_resy, hd
                 offset_x = (si + rand_x) * step_size
                 offset_y = (sj + rand_y) * step_size
                 sample_count += 1
+                hit_event_horizon = False
 
                 photon_l = l
                 photon_theta = math.pi/2
@@ -562,6 +530,12 @@ def render_kernel(b_0, l, l_max, dt, steps, fov_x, fov_y, cam_resx, cam_resy, hd
                         break
                     if abs(photon_l) > l_max:
                         break
+                    
+                    # Check if ray entered or approached the event horizon r = 2M
+                    photon_r = math.sqrt(photon_l * photon_l + b_0 * b_0)
+                    if photon_r < 2.1 * M:  # Slightly larger to catch near-horizon rays
+                        hit_event_horizon = True
+                        break
                 
                 # Equirectangular environment lookup with explicit pole-zone stabilization.
                 phi = photon_phi % (2 * math.pi)
@@ -649,6 +623,8 @@ def render_kernel(b_0, l, l_max, dt, steps, fov_x, fov_y, cam_resx, cam_resy, hd
                     b *= fade
                 if capture_gpu[j, i]:
                     r, g, b = 0, 0, 0  # captured rays appear black
+                if hit_event_horizon:
+                    r, g, b = 0, 0, 0  # rays entering event horizon appear black
                 
                 # Accumulate samples
                 r_accum += r
@@ -677,7 +653,7 @@ for frame in range(num_frames):
     l_temp = l + (frame) * d_l
     # Non-linear yaw using atan to keep wormhole centered while rotating
     cam_yaw_temp =cam_yaw+ 90 - 90 * (math.atan(l_temp / b_0) / math.atan(l / b_0))
-    render_kernel[blockspergrid, threadsperblock](b_0, l_temp, l_max, dt, steps, fov_x, fov_y, cam_resx, cam_resy, hdri_universe1_gpu, hdri_universe2_gpu, x_shift, image_gpu, capture_gpu, phi_temp, aa_samples, cam_pitch, cam_yaw_temp, frame)
+    render_kernel[blockspergrid, threadsperblock](b_0, l_temp, l_max, dt, steps, fov_x, fov_y, cam_resx, cam_resy, hdri_universe1_gpu, hdri_universe2_gpu, x_shift, image_gpu, capture_gpu, phi_temp, aa_samples, cam_pitch, cam_yaw_temp, frame, M)
     image = image_gpu.copy_to_host()
     image = np.clip(image, 0, 1)
     image = image**(1/2.2) #gamma correction
