@@ -10,7 +10,7 @@ b_0 = 1
 l_max = 20*b_0
 l = 6
 dt = 0.002
-a = -1 # Wormhole rotation parameter (0 for non-rotating, up to ~1 for fast rotation)
+a = -0.4 # Wormhole rotation parameter (0 for non-rotating, up to ~1 for fast rotation)
 # Note for dt: base integration step used by curvature-adaptive stepping.
 # With antialiasing and bilinear interpolation, dt=0.002-0.003 works well for 1080p.
 # For 4K, use dt=0.001. Higher dt values may still work due to adaptive stepping.

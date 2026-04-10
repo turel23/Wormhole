@@ -10,14 +10,14 @@ os.makedirs("videos", exist_ok=True)
 #parameters
 b_0 = 1
 l_max = 20*b_0
-dt = 0.002
+dt = 0.001
 a = 0.2  # Wormhole rotation parameter (0 for non-rotating, up to ~1 for fast rotation)
 # Note for dt: base integration step used by curvature-adaptive stepping.
 # With antialiasing and bilinear interpolation, dt=0.002-0.003 works well for 1080p.
 # For 4K, use dt=0.001. Higher dt values may still work due to adaptive stepping.
 dt_max = 120
 steps = int(dt_max/dt)
-aa_samples = 2  # antialiasing: number of samples per pixel (2 for diagonal sampling)
+aa_samples = 4  # antialiasing: number of samples per pixel (2 for diagonal sampling)
 aa_samples = max(1, int(aa_samples))
 x_shift = 1500  # base seam shift in pixels.
 # Optional seam calibration for lensing-ring artifacts:
@@ -57,7 +57,13 @@ photon_phi = phi_offset * (2*math.pi)/180
 
 #open  the hdri image
 hdri_universe1 = imageio.imread("Skyboxes/starmap_2020_8k.exr")[..., :3].astype(np.float32)
-hdri_universe2 = imageio.imread("Skyboxes/HDR_silver_and_gold_nebulae.hdr")[..., :3].astype(np.float32)
+
+img = Image.open("Skyboxes/custom.png").resize((8192, 4096), Image.LANCZOS)
+img_array = np.array(img).astype(np.float32) / 255.0
+img_array = img_array ** 2.2  # sRGB to linear
+imageio.imwrite("Skyboxes/custom.hdr", img_array)
+
+hdri_universe2 = imageio.imread("Skyboxes/custom.hdr")[..., :3].astype(np.float32)
 
 print(f"Shape: {hdri_universe1.shape}, dtype: {hdri_universe1.dtype}")
 
@@ -78,8 +84,8 @@ x_shift = (x_shift - hdri_universe1.shape[1] // 2) % hdri_universe1.shape[1]
 
 
 #image setup
-cam_resx = 1000 #pixels
-cam_resy = 1000 
+cam_resx = 3840 #pixels
+cam_resy = 2160 
 fov_y = 60 #degrees
 aspect = cam_resx / cam_resy
 # Derive fov_x from fov_y and aspect to avoid squeeze
