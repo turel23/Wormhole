@@ -11,15 +11,16 @@ os.makedirs("videos", exist_ok=True)
 b_0 = 1
 l_max = 20*b_0
 dt = 0.001
-a = 0.2  # Wormhole rotation parameter (0 for non-rotating, up to ~1 for fast rotation)
+a = 0  # Wormhole rotation parameter (0 for non-rotating, up to ~1 for fast rotation)
+
 # Note for dt: base integration step used by curvature-adaptive stepping.
 # With antialiasing and bilinear interpolation, dt=0.002-0.003 works well for 1080p.
 # For 4K, use dt=0.001. Higher dt values may still work due to adaptive stepping.
 dt_max = 120
 steps = int(dt_max/dt)
-aa_samples = 4  # antialiasing: number of samples per pixel (2 for diagonal sampling)
+aa_samples = 2  # antialiasing: number of samples per pixel (2 for diagonal sampling)
 aa_samples = max(1, int(aa_samples))
-x_shift = 1500  # base seam shift in pixels.
+x_shift = 1400  # base seam shift in pixels.
 # Optional seam calibration for lensing-ring artifacts:
 # 1) Temporarily set a = 0 and render a frame.
 # 2) Measure the artifact longitude in degrees as seam_phi_deg.
@@ -30,17 +31,20 @@ seam_phi_deg = None
 # set x_shift = x_shift - hdri_universe1.shape[1]//2  (after loading the image).
 
 #animation settings
-video_duration = 1
-fps = 1
+video_duration = 5
+fps = 24
 num_frames = video_duration * fps
-video_filename = "videos/wormhole_withAA.mp4"
+video_filename = "videos/spinparam.mp4"
 frame_span = max(1, num_frames - 1)
+
+final_a=1
+da= (final_a-a)/(fps*video_duration)
 
 change_phi = 0
 phi_offset = 0
 d_phi = change_phi/frame_span * (2*math.pi)/180 
 
-change_l = -12
+change_l = 0
 l = 6*b_0
 d_l = change_l/frame_span
 
@@ -84,8 +88,8 @@ x_shift = (x_shift - hdri_universe1.shape[1] // 2) % hdri_universe1.shape[1]
 
 
 #image setup
-cam_resx = 3840 #pixels
-cam_resy = 2160 
+cam_resx = 1920 #pixels
+cam_resy = 1080 
 fov_y = 60 #degrees
 aspect = cam_resx / cam_resy
 # Derive fov_x from fov_y and aspect to avoid squeeze
@@ -107,7 +111,7 @@ print(np.mean(hdri_universe1))
 print(np.mean(hdri_universe2))
 
 @cuda.jit(device=True)
-def initial_conditions(photon_l, photon_theta, photon_dt, photon_dphi):
+def initial_conditions(photon_l, photon_theta, photon_dt, photon_dphi, a):
     r2 = b_0*b_0 + photon_l*photon_l
     sin_t = math.sin(photon_theta)
     sin2 = sin_t * sin_t
@@ -122,7 +126,7 @@ def initial_conditions(photon_l, photon_theta, photon_dt, photon_dphi):
     return energy, momentum
 
 @cuda.jit(device=True)
-def accelerations(photon_l, photon_theta, photon_phi, photon_dl, photon_dtheta, photon_dphi, energy, momentum_phi):
+def accelerations(photon_l, photon_theta, photon_phi, photon_dl, photon_dtheta, photon_dphi, energy, momentum_phi, a):
     # Teo metric (N=1, K=1) in proper distance l with r^2 = l^2 + b0^2.
     r2 = b_0*b_0 + photon_l*photon_l
     sin_t = math.sin(photon_theta)
@@ -148,12 +152,12 @@ def accelerations(photon_l, photon_theta, photon_phi, photon_dl, photon_dtheta, 
     return photon_dt, photon_dphi, a_l, a_theta
 
 @cuda.jit(device=True)
-def derivatives(photon_l, photon_theta, photon_phi, photon_dl, photon_dtheta, photon_dphi, energy, momentum_phi):
-    photon_dt, photon_dphi, a_l, a_theta = accelerations(photon_l, photon_theta, photon_phi, photon_dl, photon_dtheta, photon_dphi, energy, momentum_phi)
+def derivatives(photon_l, photon_theta, photon_phi, photon_dl, photon_dtheta, photon_dphi, energy, momentum_phi, a):
+    photon_dt, photon_dphi, a_l, a_theta = accelerations(photon_l, photon_theta, photon_phi, photon_dl, photon_dtheta, photon_dphi, energy, momentum_phi, a)
     return photon_dt, photon_dphi, a_l, a_theta
 
 @cuda.jit(device=True)
-def derived_dphi_from_conserved(photon_l, photon_theta, energy, momentum_phi):
+def derived_dphi_from_conserved(photon_l, photon_theta, energy, momentum_phi, a):
     # Recompute dphi from conserved quantities at the updated state.
     r2 = b_0*b_0 + photon_l*photon_l
     sin_t = math.sin(photon_theta)
@@ -196,7 +200,7 @@ def compute_adaptive_dt(base_dt, photon_l, photon_theta, photon_dtheta, photon_d
     return base_dt * dt_scale
 
 @cuda.jit(fastmath = True)
-def render_kernel(b_0, l, l_max, dt, steps, fov_x, fov_y, cam_resx, cam_resy, hdri_universe1_gpu, hdri_universe2_gpu, x_shift, image_gpu, capture_gpu, cam_phi, aa_samples, cam_pitch, cam_yaw, frame_seed):
+def render_kernel(b_0, l, l_max, dt, steps, fov_x, fov_y, cam_resx, cam_resy, hdri_universe1_gpu, hdri_universe2_gpu, x_shift, image_gpu, capture_gpu, cam_phi, aa_samples, cam_pitch, cam_yaw, frame_seed, a):
     i, j = cuda.grid(2)
     if i >= cam_resx or j >= cam_resy:
         return
@@ -277,12 +281,12 @@ def render_kernel(b_0, l, l_max, dt, steps, fov_x, fov_y, cam_resx, cam_resy, hd
             photon_dphi = v_phi
             photon_dt = 1.0
 
-            energy, momentum = initial_conditions(photon_l, photon_theta, photon_dt, photon_dphi)
+            energy, momentum = initial_conditions(photon_l, photon_theta, photon_dt, photon_dphi, a)
 
             for k in range(steps-1):
                 adaptive_dt = compute_adaptive_dt(dt, photon_l, photon_theta, photon_dtheta, photon_dphi)
 
-                k1_dt, k1_dphi, k1_al, k1_atheta = derivatives(photon_l, photon_theta, photon_phi, photon_dl, photon_dtheta, photon_dphi, energy, momentum)
+                k1_dt, k1_dphi, k1_al, k1_atheta = derivatives(photon_l, photon_theta, photon_phi, photon_dl, photon_dtheta, photon_dphi, energy, momentum, a)
                 k1_l = photon_dl
                 k1_theta = photon_dtheta
                 k1_phi = k1_dphi
@@ -295,7 +299,7 @@ def render_kernel(b_0, l, l_max, dt, steps, fov_x, fov_y, cam_resx, cam_resy, hd
                 dl2 = photon_dl + 0.5 * adaptive_dt * k1_dl
                 dtheta2 = photon_dtheta + 0.5 * adaptive_dt * k1_dtheta
                 dphi2 = k1_dphi
-                k2_dt, k2_dphi, k2_al, k2_atheta = derivatives(l2, theta2, phi2, dl2, dtheta2, dphi2, energy, momentum)
+                k2_dt, k2_dphi, k2_al, k2_atheta = derivatives(l2, theta2, phi2, dl2, dtheta2, dphi2, energy, momentum, a)
                 k2_l = dl2
                 k2_theta = dtheta2
                 k2_phi = k2_dphi
@@ -308,7 +312,7 @@ def render_kernel(b_0, l, l_max, dt, steps, fov_x, fov_y, cam_resx, cam_resy, hd
                 dl3 = photon_dl + 0.5 * adaptive_dt * k2_dl
                 dtheta3 = photon_dtheta + 0.5 * adaptive_dt * k2_dtheta
                 dphi3 = k2_dphi
-                k3_dt, k3_dphi, k3_al, k3_atheta = derivatives(l3, theta3, phi3, dl3, dtheta3, dphi3, energy, momentum)
+                k3_dt, k3_dphi, k3_al, k3_atheta = derivatives(l3, theta3, phi3, dl3, dtheta3, dphi3, energy, momentum, a)
                 k3_l = dl3
                 k3_theta = dtheta3
                 k3_phi = k3_dphi
@@ -321,7 +325,7 @@ def render_kernel(b_0, l, l_max, dt, steps, fov_x, fov_y, cam_resx, cam_resy, hd
                 dl4 = photon_dl + adaptive_dt * k3_dl
                 dtheta4 = photon_dtheta + adaptive_dt * k3_dtheta
                 dphi4 = k3_dphi
-                k4_dt, k4_dphi, k4_al, k4_atheta = derivatives(l4, theta4, phi4, dl4, dtheta4, dphi4, energy, momentum)
+                k4_dt, k4_dphi, k4_al, k4_atheta = derivatives(l4, theta4, phi4, dl4, dtheta4, dphi4, energy, momentum, a)
                 k4_l = dl4
                 k4_theta = dtheta4
                 k4_phi = k4_dphi
@@ -333,7 +337,7 @@ def render_kernel(b_0, l, l_max, dt, steps, fov_x, fov_y, cam_resx, cam_resy, hd
                 photon_phi += (adaptive_dt/6) * (k1_phi + 2*k2_phi + 2*k3_phi + k4_phi)
                 photon_dl += (adaptive_dt/6) * (k1_dl + 2*k2_dl + 2*k3_dl + k4_dl)
                 photon_dtheta += (adaptive_dt/6) * (k1_dtheta + 2*k2_dtheta + 2*k3_dtheta + k4_dtheta)
-                photon_dphi = derived_dphi_from_conserved(photon_l, photon_theta, energy, momentum)
+                photon_dphi = derived_dphi_from_conserved(photon_l, photon_theta, energy, momentum, a)
                 
                 # Check for numerical issues
                 if not (-1e10 < photon_l < 1e10) or not (0 < photon_theta < math.pi):
@@ -506,11 +510,11 @@ def render_kernel(b_0, l, l_max, dt, steps, fov_x, fov_y, cam_resx, cam_resy, hd
                 photon_dphi = v_phi
                 photon_dt = 1.0
 
-                energy, momentum = initial_conditions(photon_l, photon_theta, photon_dt, photon_dphi)
+                energy, momentum = initial_conditions(photon_l, photon_theta, photon_dt, photon_dphi, a)
                 for k in range(steps-1):
                     adaptive_dt = compute_adaptive_dt(dt, photon_l, photon_theta, photon_dtheta, photon_dphi)
 
-                    k1_dt, k1_dphi, k1_al, k1_atheta = derivatives(photon_l, photon_theta, photon_phi, photon_dl, photon_dtheta, photon_dphi, energy, momentum)
+                    k1_dt, k1_dphi, k1_al, k1_atheta = derivatives(photon_l, photon_theta, photon_phi, photon_dl, photon_dtheta, photon_dphi, energy, momentum, a)
                     k1_l = photon_dl
                     k1_theta = photon_dtheta
                     k1_phi = k1_dphi
@@ -523,7 +527,7 @@ def render_kernel(b_0, l, l_max, dt, steps, fov_x, fov_y, cam_resx, cam_resy, hd
                     dl2 = photon_dl + 0.5 * adaptive_dt * k1_dl
                     dtheta2 = photon_dtheta + 0.5 * adaptive_dt * k1_dtheta
                     dphi2 = k1_dphi
-                    k2_dt, k2_dphi, k2_al, k2_atheta = derivatives(l2, theta2, phi2, dl2, dtheta2, dphi2, energy, momentum)
+                    k2_dt, k2_dphi, k2_al, k2_atheta = derivatives(l2, theta2, phi2, dl2, dtheta2, dphi2, energy, momentum, a)
                     k2_l = dl2
                     k2_theta = dtheta2
                     k2_phi = k2_dphi
@@ -536,7 +540,7 @@ def render_kernel(b_0, l, l_max, dt, steps, fov_x, fov_y, cam_resx, cam_resy, hd
                     dl3 = photon_dl + 0.5 * adaptive_dt * k2_dl
                     dtheta3 = photon_dtheta + 0.5 * adaptive_dt * k2_dtheta
                     dphi3 = k2_dphi
-                    k3_dt, k3_dphi, k3_al, k3_atheta = derivatives(l3, theta3, phi3, dl3, dtheta3, dphi3, energy, momentum)
+                    k3_dt, k3_dphi, k3_al, k3_atheta = derivatives(l3, theta3, phi3, dl3, dtheta3, dphi3, energy, momentum, a)
                     k3_l = dl3
                     k3_theta = dtheta3
                     k3_phi = k3_dphi
@@ -549,7 +553,7 @@ def render_kernel(b_0, l, l_max, dt, steps, fov_x, fov_y, cam_resx, cam_resy, hd
                     dl4 = photon_dl + adaptive_dt * k3_dl
                     dtheta4 = photon_dtheta + adaptive_dt * k3_dtheta
                     dphi4 = k3_dphi
-                    k4_dt, k4_dphi, k4_al, k4_atheta = derivatives(l4, theta4, phi4, dl4, dtheta4, dphi4, energy, momentum)
+                    k4_dt, k4_dphi, k4_al, k4_atheta = derivatives(l4, theta4, phi4, dl4, dtheta4, dphi4, energy, momentum, a)
                     k4_l = dl4
                     k4_theta = dtheta4
                     k4_phi = k4_dphi
@@ -561,7 +565,7 @@ def render_kernel(b_0, l, l_max, dt, steps, fov_x, fov_y, cam_resx, cam_resy, hd
                     photon_phi += (adaptive_dt/6) * (k1_phi + 2*k2_phi + 2*k3_phi + k4_phi)
                     photon_dl += (adaptive_dt/6) * (k1_dl + 2*k2_dl + 2*k3_dl + k4_dl)
                     photon_dtheta += (adaptive_dt/6) * (k1_dtheta + 2*k2_dtheta + 2*k3_dtheta + k4_dtheta)
-                    photon_dphi = derived_dphi_from_conserved(photon_l, photon_theta, energy, momentum)
+                    photon_dphi = derived_dphi_from_conserved(photon_l, photon_theta, energy, momentum, a)
                     
                     # Check for numerical issues
                     if not (-1e10 < photon_l < 1e10) or not (0 < photon_theta < math.pi):
@@ -683,7 +687,8 @@ for frame in range(num_frames):
     l_temp = l + (frame) * d_l
     # Non-linear yaw using atan to keep wormhole centered while rotating
     cam_yaw_temp =cam_yaw+ 90 - 90 * (math.atan(l_temp / b_0) / math.atan(l / b_0))
-    render_kernel[blockspergrid, threadsperblock](b_0, l_temp, l_max, dt, steps, fov_x, fov_y, cam_resx, cam_resy, hdri_universe1_gpu, hdri_universe2_gpu, x_shift, image_gpu, capture_gpu, phi_temp, aa_samples, cam_pitch, cam_yaw_temp, frame)
+    render_kernel[blockspergrid, threadsperblock](b_0, l_temp, l_max, dt, steps, fov_x, fov_y, cam_resx, cam_resy, hdri_universe1_gpu, hdri_universe2_gpu, x_shift, image_gpu, capture_gpu, phi_temp, aa_samples, cam_pitch, cam_yaw_temp, frame, a)
+    a+=da
     image = image_gpu.copy_to_host()
     image = np.clip(image, 0, 1)
     image = image**(1/2.2) #gamma correction
