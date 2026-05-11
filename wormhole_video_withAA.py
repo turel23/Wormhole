@@ -4,21 +4,27 @@ from PIL import Image
 from numba import cuda
 import math
 import os
+import time
 
 os.makedirs("frames", exist_ok=True)
 os.makedirs("videos", exist_ok=True)
+
+# Record start time for render timing
+start_time = time.time()
+print(f"Render started at: {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(start_time))}")
+
 #parameters
-b_0 = 1
+b_0 = 4
 l_max = 20*b_0
 dt = 0.001
-a = 0  # Wormhole rotation parameter (0 for non-rotating, up to ~1 for fast rotation)
+a = 0.2  # Wormhole rotation parameter (0 for non-rotating, up to ~1 for fast rotation)
 
 # Note for dt: base integration step used by curvature-adaptive stepping.
 # With antialiasing and bilinear interpolation, dt=0.002-0.003 works well for 1080p.
 # For 4K, use dt=0.001. Higher dt values may still work due to adaptive stepping.
 dt_max = 120
 steps = int(dt_max/dt)
-aa_samples = 2  # antialiasing: number of samples per pixel (2 for diagonal sampling)
+aa_samples = 4  # antialiasing: number of samples per pixel (2 for diagonal sampling)
 aa_samples = max(1, int(aa_samples))
 x_shift = 1400  # base seam shift in pixels.
 # Optional seam calibration for lensing-ring artifacts:
@@ -31,13 +37,13 @@ seam_phi_deg = None
 # set x_shift = x_shift - hdri_universe1.shape[1]//2  (after loading the image).
 
 #animation settings
-video_duration = 5
-fps = 24
+video_duration = 1
+fps = 1
 num_frames = video_duration * fps
 video_filename = "videos/spinparam.mp4"
 frame_span = max(1, num_frames - 1)
 
-final_a=1
+final_a=0.2
 da= (final_a-a)/(fps*video_duration)
 
 change_phi = 0
@@ -45,7 +51,7 @@ phi_offset = 0
 d_phi = change_phi/frame_span * (2*math.pi)/180 
 
 change_l = 0
-l = 6*b_0
+l = 19
 d_l = change_l/frame_span
 
 change_yaw = 180 #No need to convert to radians, it does it later in the kernel
@@ -132,8 +138,8 @@ def accelerations(photon_l, photon_theta, photon_phi, photon_dl, photon_dtheta, 
     sin_t = math.sin(photon_theta)
     cos_t = math.cos(photon_theta)
     sin2 = sin_t * sin_t
-    omega = 2.0 * a * (r2 ** -1.5)
-    domega_dl = -3.0 * photon_l * omega / r2
+    omega = 2.0 * a * (r2 ** -1.5+1e-5)
+    domega_dl = -3.0 * photon_l * omega / (r2+1e-5)
 
     gtt = -1.0 + r2 * sin2 * omega * omega
     gtphi = -r2 * sin2 * omega
@@ -143,12 +149,12 @@ def accelerations(photon_l, photon_theta, photon_phi, photon_dl, photon_dtheta, 
     if abs(delta) < 1e-12:
         delta = 1e-12
 
-    photon_dt = (energy * gphiphi + momentum_phi * gtphi) / delta
-    photon_dphi = -(energy * gtphi + momentum_phi * gtt) / delta
+    photon_dt = (energy * gphiphi + momentum_phi * gtphi) / (delta+1e-5)
+    photon_dphi = -(energy * gtphi + momentum_phi * gtt) / (delta+1e-5)
 
     psi = photon_dphi - omega * photon_dt
     a_l = photon_l * (photon_dtheta*photon_dtheta + sin2 * psi * psi) - r2 * sin2 * psi * domega_dl * photon_dt
-    a_theta = ((photon_l**2+b_0**2)*sin_t*cos_t*(photon_dphi**2-2*omega*photon_dphi*photon_dt+omega*omega*photon_dt*photon_dt)-2*photon_l*photon_dl*photon_dtheta)/(photon_l**2+b_0**2)
+    a_theta = ((photon_l**2+b_0**2)*sin_t*cos_t*(photon_dphi**2-2*omega*photon_dphi*photon_dt+omega*omega*photon_dt*photon_dt)-2*photon_l*photon_dl*photon_dtheta)/(photon_l**2+b_0**2+1e-5)
     return photon_dt, photon_dphi, a_l, a_theta
 
 @cuda.jit(device=True)
@@ -162,7 +168,7 @@ def derived_dphi_from_conserved(photon_l, photon_theta, energy, momentum_phi, a)
     r2 = b_0*b_0 + photon_l*photon_l
     sin_t = math.sin(photon_theta)
     sin2 = sin_t * sin_t
-    omega = 2.0 * a * (r2 ** -1.5)
+    omega = 2.0 * a / (r2 ** 1.5+1e-5)
 
     gtt = -1.0 + r2 * sin2 * omega * omega
     gtphi = -r2 * sin2 * omega
@@ -172,13 +178,13 @@ def derived_dphi_from_conserved(photon_l, photon_theta, energy, momentum_phi, a)
     if abs(delta) < 1e-12:
         delta = 1e-12
 
-    return -(energy * gtphi + momentum_phi * gtt) / delta
+    return -(energy * gtphi + momentum_phi * gtt) / (delta+1e-5)
 
 @cuda.jit(device=True)
 def compute_adaptive_dt(base_dt, photon_l, photon_theta, photon_dtheta, photon_dphi):
     # Geometric curvature proxy is strongest near the throat and decays with distance.
     r2 = b_0*b_0 + photon_l*photon_l
-    geom_curvature = (b_0*b_0) / r2
+    geom_curvature = (b_0*b_0) / (r2+1e-5)
 
     sin_t = math.sin(photon_theta)
     ang_speed = r2 * (photon_dtheta*photon_dtheta + sin_t*sin_t*photon_dphi*photon_dphi)
@@ -258,14 +264,14 @@ def render_kernel(b_0, l, l_max, dt, steps, fov_x, fov_y, cam_resx, cam_resy, hd
             dir_z = dir_z_f
 
             dir_norm = math.sqrt(dir_x * dir_x + dir_y * dir_y + dir_z * dir_z)
-            dir_x /= dir_norm
-            dir_y /= dir_norm
-            dir_z /= dir_norm
+            dir_x = dir_x/(dir_norm+1e-5)
+            dir_y = dir_y/(dir_norm+1e-5)
+            dir_z = dir_z/(dir_norm+1e-5)
 
             # Convert 3D direction to spherical velocity components.
             # Camera starts at equator (theta=π/2) looking in +phi direction.
             # dir_z is forward (along +phi), dir_x is right, dir_y is up (toward pole).
-            inv_r = 1.0 / math.sqrt(b_0 * b_0 + photon_l * photon_l)
+            inv_r = 1.0 / (math.sqrt(b_0 * b_0 + photon_l * photon_l)+1e-5)
             # Tangent-plane mapping at camera location:
             # +x on sensor -> +phi, +y on sensor -> -theta, z contributes to radial part (v_l).
             v_theta = -dir_y * inv_r
@@ -429,8 +435,6 @@ def render_kernel(b_0, l, l_max, dt, steps, fov_x, fov_y, cam_resx, cam_resy, hd
                 r *= fade
                 g *= fade
                 b *= fade
-            if capture_gpu[j, i]:
-                r, g, b = 0, 0, 0  # captured rays appear black
             
             # Accumulate samples
             r_accum += r
@@ -657,8 +661,6 @@ def render_kernel(b_0, l, l_max, dt, steps, fov_x, fov_y, cam_resx, cam_resy, hd
                     r *= fade
                     g *= fade
                     b *= fade
-                if capture_gpu[j, i]:
-                    r, g, b = 0, 0, 0  # captured rays appear black
                 
                 # Accumulate samples
                 r_accum += r
@@ -679,7 +681,7 @@ blockspergrid_x = math.ceil(cam_resx / threadsperblock[0])
 blockspergrid_y = math.ceil(cam_resy / threadsperblock[1])
 blockspergrid = (blockspergrid_x, blockspergrid_y)
 
-print(f"Starting render: {num_frames} frames with {aa_samples}x antialiasing")
+print(f"Starting render: {num_frames} frames at {cam_resx}x{cam_resy} with {aa_samples}x antialiasing")
 print(f"Process ID: {os.getpid()}")  # Help identify if multiple instances are running
 
 for frame in range(num_frames):
@@ -707,3 +709,13 @@ try:
     print(f"Video saved: {video_filename}")
 except Exception as exc:
     print(f"Video assembly failed ({exc}). Frames are still available in ./frames")
+
+# Calculate and print render time
+end_time = time.time()
+elapsed_time = end_time - start_time
+minutes, seconds = divmod(int(elapsed_time), 60)
+hours, minutes = divmod(minutes, 60)
+print(f"\n===== RENDER TIME =====")
+print(f"Total render time: {hours}h {minutes}m {seconds}s")
+print(f"Render ended at: {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(end_time))}")
+print(f"=====================")
