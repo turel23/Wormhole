@@ -1,4 +1,4 @@
-# Join the Discord!!
+# Join the Discord
 https://discord.gg/Nd3Tqhxh2
 # Wormhole
 This project uses relativistic ray tracing to create a visual simulation for wormholes
