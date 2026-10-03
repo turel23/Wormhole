@@ -122,7 +122,6 @@ def render_kernel(b_0, l, l_max, dt, steps, fov_x, fov_y, cam_resx, cam_resy, hd
     theta = photon_theta
     phi = photon_phi
     phi = phi % (2 * math.pi) 
-    # Clamp theta away from poles to avoid singularities
     theta = max(0.01, min(math.pi - 0.01, theta))
     H = hdri_universe1_gpu.shape[0]
     W = hdri_universe1_gpu.shape[1]
@@ -140,9 +139,7 @@ def render_kernel(b_0, l, l_max, dt, steps, fov_x, fov_y, cam_resx, cam_resy, hd
         b = hdri_universe2_gpu[pixel_y, pixel_x, 2]
 
     norm = math.sqrt(r*r + g*g + b*b)
-    # Temporarily disabled to debug - see raw HDRI values
     if norm < 0.05:
-        # Desaturate and fade very dark pixels
         gray = (r + g + b) / 3.0
         fade = norm / 0.05
         r = gray * fade * 0.5
