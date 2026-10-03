@@ -63,8 +63,8 @@ fov_y = 60 #degrees
 aspect = cam_resx / cam_resy
 # Derive fov_x from fov_y and aspect to avoid squeeze
 fov_x = 2 * math.atan(math.tan(fov_y * math.pi / 360) * aspect) * 180 / math.pi
-# Camera rotation angles in degrees (pitch up toward north pole, yaw)
-cam_pitch = 0  # Increase to look UP (e.g., 45.0 to look at north pole)
+
+cam_pitch = 0  
 
 
 image = np.zeros((cam_resy, cam_resx, 3), dtype=np.float32)
@@ -87,7 +87,7 @@ def fill_captured_with_horizontal_neighbors(image, captured_mask):
 
     fixed = image.copy()
 
-    # Valid neighbor availability for each captured pixel.
+
     left_valid = np.zeros_like(captured_mask)
     right_valid = np.zeros_like(captured_mask)
     left_valid[:, 1:] = ~captured_mask[:, :-1]
@@ -97,11 +97,11 @@ def fill_captured_with_horizontal_neighbors(image, captured_mask):
     use_right = captured_mask & right_valid & ~left_valid
     use_both = captured_mask & left_valid & right_valid
 
-    # Fill from one side when only one clean neighbor exists.
+
     fixed[:, 1:][use_left[:, 1:]] = fixed[:, :-1][use_left[:, 1:]]
     fixed[:, :-1][use_right[:, :-1]] = fixed[:, 1:][use_right[:, :-1]]
 
-    # Average left/right when both are available.
+
     both_cols = use_both[:, 1:-1]
     if np.any(both_cols):
         left_vals = fixed[:, :-2][both_cols]
@@ -135,7 +135,7 @@ def render_kernel(b_0, l, l_max, dt, steps, fov_x, fov_y, cam_resx, cam_resy, hd
     if i >= cam_resx or j >= cam_resy:
         return
 
-    # Antialiasing: accumulate color from multiple subpixel samples
+    # aa
     r_accum = 0.0
     g_accum = 0.0
     b_accum = 0.0
@@ -146,7 +146,7 @@ def render_kernel(b_0, l, l_max, dt, steps, fov_x, fov_y, cam_resx, cam_resy, hd
     
     for si in range(samples_per_axis):
         for sj in range(samples_per_axis):
-            # Subpixel offset
+
             offset_x = (si + 0.5) * step_size
             offset_y = (sj + 0.5) * step_size
             
@@ -154,11 +154,10 @@ def render_kernel(b_0, l, l_max, dt, steps, fov_x, fov_y, cam_resx, cam_resy, hd
             photon_theta = math.pi/2
             photon_phi = cam_phi
             
-            # Pinhole camera model: cast rays through a flat image plane.
+            # uses pinhole
             px = (2 * ((i + offset_x) / cam_resx) - 1) * math.tan(fov_x * math.pi / 360)
             py = (1 - 2 * ((j + offset_y) / cam_resy)) * math.tan(fov_y * math.pi / 360)
 
-            # Add tiny epsilon to prevent exact zeros that might cause numerical issues
             epsilon = 1e-10
             if abs(px) < epsilon:
                 px = epsilon if px >= 0 else -epsilon
@@ -169,8 +168,6 @@ def render_kernel(b_0, l, l_max, dt, steps, fov_x, fov_y, cam_resx, cam_resy, hd
             dir_y = py
             dir_z = -1.0
 
-            # Apply camera pitch and yaw rotations.
-            # Clamp away from exact +/-90 deg where longitude is undefined at poles.
             pitch_rad = cam_pitch * math.pi / 180.0
             pitch_limit = 89.5 * math.pi / 180.0
             if pitch_rad > pitch_limit:
@@ -178,12 +175,10 @@ def render_kernel(b_0, l, l_max, dt, steps, fov_x, fov_y, cam_resx, cam_resy, hd
             elif pitch_rad < -pitch_limit:
                 pitch_rad = -pitch_limit
             yaw_rad = cam_yaw * math.pi / 180.0
-            
-            # Pitch (rotate around X-axis): positive pitch looks upward at poles.
+
             dir_y_p = dir_y * math.cos(pitch_rad) - dir_z * math.sin(pitch_rad)
             dir_z_p = dir_y * math.sin(pitch_rad) + dir_z * math.cos(pitch_rad)
-            
-            # Yaw (rotate around Y-axis): positive yaw looks left.
+
             dir_x_y = dir_x * math.cos(yaw_rad) - dir_z_p * math.sin(yaw_rad)
             dir_z_f = dir_x * math.sin(yaw_rad) + dir_z_p * math.cos(yaw_rad)
             
@@ -196,12 +191,7 @@ def render_kernel(b_0, l, l_max, dt, steps, fov_x, fov_y, cam_resx, cam_resy, hd
             dir_y /= dir_norm
             dir_z /= dir_norm
 
-            # Convert 3D direction to spherical velocity components.
-            # Camera starts at equator (theta=π/2) looking in +phi direction.
-            # dir_z is forward (along +phi), dir_x is right, dir_y is up (toward pole).
             inv_r = 1.0 / math.sqrt(b_0 * b_0 + photon_l * photon_l)
-            # Tangent-plane mapping at camera location:
-            # +x on sensor -> +phi, +y on sensor -> -theta, z contributes to radial part (v_l).
             v_theta = -dir_y * inv_r
             v_phi = dir_x * inv_r
 
@@ -217,12 +207,11 @@ def render_kernel(b_0, l, l_max, dt, steps, fov_x, fov_y, cam_resx, cam_resy, hd
             photon_dphi = v_phi
 
             for k in range(steps-1):
-                # Adaptive timestep: scale down near wormhole throat (dynamically updates as photon moves)
+
                 radius_sq = b_0*b_0 + photon_l*photon_l
                 adaptive_dt = dt
                 
-                if radius_sq < 4.0 * b_0 * b_0:  # Within 2*b_0 radius of throat
-                    # Scale dt down smoothly as we get closer to throat
+                if radius_sq < 4.0 * b_0 * b_0:
                     scale_factor = max(0.3, radius_sq / (4.0 * b_0 * b_0))
                     adaptive_dt = dt * scale_factor
                 
@@ -236,49 +225,40 @@ def render_kernel(b_0, l, l_max, dt, steps, fov_x, fov_y, cam_resx, cam_resy, hd
                 photon_dl += (adaptive_dt/6)*(photon_al_k1 + 2*photon_al_k2 + 2*photon_al_k3 + photon_al_k4)
                 photon_dtheta += (adaptive_dt/6)*(photon_atheta_k1 + 2*photon_atheta_k2 + 2*photon_atheta_k3 + photon_atheta_k4)
                 photon_dphi += (adaptive_dt/6)*(photon_aphi_k1 + 2*photon_aphi_k2 + 2*photon_aphi_k3 + photon_aphi_k4)
-                
-                # Check for numerical issues - mark pixel if this triggers
+
                 if not (-1e10 < photon_l < 1e10) or not (0 < photon_theta < math.pi):
                     capture_gpu[j, i] = True
                     break
                 if abs(photon_l) > l_max:
                     break
-            
-            # Equirectangular environment lookup with explicit pole-zone stabilization.
+
             phi = photon_phi % (2 * math.pi)
             theta = max(0.0, min(math.pi, photon_theta))
 
             H = hdri_universe1_gpu.shape[0]
             W = hdri_universe1_gpu.shape[1]
 
-            # Use a practical pole zone (~2 texel rows) where longitude becomes unstable.
             pole_eps = 2.0 * (math.pi / H)
 
-            # Horizontal coordinate from longitude.
             u = (phi / (2 * math.pi)) * W
-            # Near poles, force a stable longitude to avoid streaking/tearing.
+
             if theta < pole_eps or theta > (math.pi - pole_eps):
                 u = 0.5 * W
 
-            # Vertical coordinate from latitude (standard equirectangular map).
             v = (theta / math.pi) * H
 
-            # Apply seam shift after computing longitude.
             u = (u + x_shift) % W
 
-            # Get integer coordinates.
             u0 = int(u) % W
             v0 = int(v)
             u1 = (u0 + 1) % W
             v1 = min(v0 + 1, H - 1)
             v0 = max(0, min(H - 1, v0))
 
-            # Bilinear interpolation weights.
             fu = u - int(u)
             fv = v - int(v)
             
             if photon_l > 0:
-                # Bilinear interpolation
                 c00_r = hdri_universe1_gpu[v0, u0, 0]
                 c00_g = hdri_universe1_gpu[v0, u0, 1]
                 c00_b = hdri_universe1_gpu[v0, u0, 2]
@@ -296,7 +276,6 @@ def render_kernel(b_0, l, l_max, dt, steps, fov_x, fov_y, cam_resx, cam_resy, hd
                 g = (1-fu)*(1-fv)*c00_g + fu*(1-fv)*c01_g + (1-fu)*fv*c10_g + fu*fv*c11_g
                 b = (1-fu)*(1-fv)*c00_b + fu*(1-fv)*c01_b + (1-fu)*fv*c10_b + fu*fv*c11_b
             else:
-                # Bilinear interpolation
                 c00_r = hdri_universe2_gpu[v0, u0, 0]
                 c00_g = hdri_universe2_gpu[v0, u0, 1]
                 c00_b = hdri_universe2_gpu[v0, u0, 2]
@@ -316,44 +295,37 @@ def render_kernel(b_0, l, l_max, dt, steps, fov_x, fov_y, cam_resx, cam_resy, hd
 
             norm = math.sqrt(r*r + g*g + b*b)
             if norm < 0.05:
-                # Desaturate and fade very dark pixels
                 gray = (r + g + b) / 3.0
                 fade = norm / 0.05
                 r = gray * fade * 0.5
                 g = gray * fade * 0.5
                 b = gray * fade * 0.5
             elif norm > 0:
-                # Smooth fade below 0.1
                 fade = min(1.0, norm / 0.1)
                 r *= fade
                 g *= fade
                 b *= fade
-            # Accumulate samples
+
             r_accum += r
             g_accum += g
             b_accum += b
-    
-    # Average all samples
     image_gpu[j, i, 0] = r_accum / aa_samples
     image_gpu[j, i, 1] = g_accum / aa_samples
     image_gpu[j, i, 2] = b_accum / aa_samples
-        
-
 threadsperblock = (16,16)
 blockspergrid_x = math.ceil(cam_resx / threadsperblock[0])
 blockspergrid_y = math.ceil(cam_resy / threadsperblock[1])
 blockspergrid = (blockspergrid_x, blockspergrid_y)
 
 print(f"Starting render: {num_frames} frames with {aa_samples}x antialiasing")
-print(f"Process ID: {os.getpid()}")  # Help identify if multiple instances are running
+print(f"Process ID: {os.getpid()}")
 
 for frame in range(num_frames):
     phi_temp = phi_offset + (frame) * d_phi
     l_temp = l + (frame) * d_l
-    # Non-linear yaw using atan to keep wormhole centered while rotating
+
     cam_yaw_temp = 90 - 90 * (math.atan(l_temp / b_0) / math.atan(l / b_0))
 
-    # Reset capture flags for this frame so only current-frame failures are repaired.
     capture.fill(False)
     capture_gpu.copy_to_device(capture)
 
