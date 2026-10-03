@@ -91,7 +91,7 @@ def render_kernel(b_0, l, l_max, dt, steps, fov_x, fov_y, cam_resx, cam_resy, hd
     if i >= cam_resx or j >= cam_resy:
         return
 
-    # Antialiasing: accumulate color from multiple subpixel samples
+    # aa
     r_accum = 0.0
     g_accum = 0.0
     b_accum = 0.0
@@ -146,7 +146,6 @@ def render_kernel(b_0, l, l_max, dt, steps, fov_x, fov_y, cam_resx, cam_resy, hd
             theta = photon_theta
             phi = photon_phi
             phi = phi % (2 * math.pi) 
-            # Clamp theta away from poles to avoid singularities
             theta = max(0.01, min(math.pi - 0.01, theta))
             H = hdri_universe1_gpu.shape[0]
             W = hdri_universe1_gpu.shape[1]
@@ -166,27 +165,23 @@ def render_kernel(b_0, l, l_max, dt, steps, fov_x, fov_y, cam_resx, cam_resy, hd
 
             norm = math.sqrt(r*r + g*g + b*b)
             if norm < 0.05:
-                # Desaturate and fade very dark pixels
                 gray = (r + g + b) / 3.0
                 fade = norm / 0.05
                 r = gray * fade * 0.5
                 g = gray * fade * 0.5
                 b = gray * fade * 0.5
             elif norm > 0:
-                # Smooth fade below 0.1
                 fade = min(1.0, norm / 0.1)
                 r *= fade
                 g *= fade
                 b *= fade
             if capture_gpu[j, i]:
-                r, g, b = 0, 0, 0  # captured rays appear black
-            
-            # Accumulate samples
+                r, g, b = 0, 0, 0 
+
             r_accum += r
             g_accum += g
             b_accum += b
-    
-    # Average all samples
+
     image_gpu[j, i, 0] = r_accum / aa_samples
     image_gpu[j, i, 1] = g_accum / aa_samples
     image_gpu[j, i, 2] = b_accum / aa_samples
@@ -198,7 +193,7 @@ blockspergrid_y = math.ceil(cam_resy / threadsperblock[1])
 blockspergrid = (blockspergrid_x, blockspergrid_y)
 
 print(f"Starting render: {num_frames} frames with {aa_samples}x antialiasing")
-print(f"Process ID: {os.getpid()}")  # Help identify if multiple instances are running
+print(f"Process ID: {os.getpid()}")
 
 for frame in range(num_frames):
     phi_offset = frame * d_phi
